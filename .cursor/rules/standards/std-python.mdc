@@ -1,0 +1,13 @@
+---
+description: Python 代码规范（在处理 .py 文件时自动附加）
+globs: **/*.py
+alwaysApply: false
+---
+
+# Python 规范
+
+- 目标 Python 3.9+；遵循 PEP 8，公共函数使用类型注解。
+- 使用 f-string 做字符串格式化；避免可变默认参数。
+- I/O、外部调用需处理异常，不吞掉错误堆栈。
+- 依赖固定版本写入 `requirements.txt` / `pyproject.toml`，不随意升级大版本。
+- 新增逻辑配套单元测试（pytest）。

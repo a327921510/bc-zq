@@ -1,0 +1,7 @@
+# 依赖版本钉死，避免环境漂移（std-python）
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+httpx==0.28.1
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+pytest==8.3.5

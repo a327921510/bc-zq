@@ -1,0 +1,13 @@
+---
+description: TypeScript / 前端代码规范（在处理 ts/tsx/js/jsx/vue 文件时自动附加）
+globs: **/*.{ts,tsx,js,jsx,vue}
+alwaysApply: false
+---
+
+# TypeScript / 前端规范
+
+- 优先使用 TypeScript；避免 `any`，用明确类型或泛型。
+- 使用 `const`/`let`，禁用 `var`；模块使用 ESM `import`/`export`。
+- 组件保持单一职责，副作用集中管理。
+- 异步使用 `async/await` 并处理错误分支。
+- 遵循项目现有的 lint / formatter 配置，不引入风格冲突。

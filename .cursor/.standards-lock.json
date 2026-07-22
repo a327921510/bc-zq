@@ -1,0 +1,21 @@
+{
+  "source": "git@github.com:a327921510/cursor-standards.git",
+  "version": "0.1.0",
+  "commit": "f61148a364df2cf1192186bb0147a13d62ca5233",
+  "installedAt": "2026-07-21T07:20:01Z",
+  "installMode": "copy",
+  "cliVersion": "0.1.0",
+  "dirty": false,
+  "manifest": {
+    "rules/standards/README.md": "sha256:6f223eee2db8dddeb78ebaea8b23f265ea80ac9c675a40e14b94600e8b9443ec",
+    "rules/standards/std-comments.mdc": "sha256:25f760dd25edf3adf8a3ec8824bd8b0ad6d15fb775831e4b26de7425bfb2c3fc",
+    "rules/standards/std-general.mdc": "sha256:74fcfe4ac45e026315f50717d80e3affd6927ea5b88d28ae32b4eb080f1eec32",
+    "rules/standards/std-git-workflow.mdc": "sha256:0e37e29625b944ece925825646549176f10b92aadcca0ed5b8d9f439d47bab4a",
+    "rules/standards/std-python.mdc": "sha256:ccbc20b88e51f11481f1bf456723449617ce40b5c44b06bd27c4daa269d6c51f",
+    "rules/standards/std-readability.mdc": "sha256:6e891845e03f25a3905ffb6b6fd87b2498c6364d773d8daba8bf39d8ceddd2b5",
+    "rules/standards/std-typescript.mdc": "sha256:e115177b93eb88b188f74ec3273bf300a2f197ca8fb0a169d8f814579ed4f494",
+    "skills/standards/README.md": "sha256:6f223eee2db8dddeb78ebaea8b23f265ea80ac9c675a40e14b94600e8b9443ec",
+    "skills/standards/commit-helper/SKILL.md": "sha256:4ae26c4ce3f0e55ecc7032c73516e54d1d29165ca9a289254bdbf1947eed3741",
+    "skills/standards/pr-workflow/SKILL.md": "sha256:52ab7bcaca376b004decaa1ff1b71b4e5c886f5590e5fe6c08fb3d08e05a7168"
+  }
+}

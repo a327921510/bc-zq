@@ -1,0 +1,12 @@
+# Nginx IP 白名单（生产：复制为 allowed_ips.conf 后按需改）
+# 宝塔 → 文件 → 编辑本文件 → Nginx 重载，即可开通/关闭某出口 IP
+#
+# 规则：只认公网 IP（不是 192.168.x.x）；末尾必须保留 deny all;
+# 查当前公网 IP：浏览器打开 https://ip.sb 或 https://ifconfig.me
+
+# 示例（部署时改成你的真实出口 IP，可多行）
+allow 1.2.3.4;
+# allow 5.6.7.8;
+
+# 白名单以外一律拒绝（勿删）
+deny all;

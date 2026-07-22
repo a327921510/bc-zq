@@ -1,0 +1,22 @@
+---
+description: Git commit 与 Pull Request 规范
+alwaysApply: true
+---
+
+# Git 工作流规范
+
+## Commit
+- 一个逻辑改动一个 commit，避免把不相关改动混在一起；混入多主题时应拆分。
+- Commit message 采用 Conventional Commits：`type(scope): summary`（scope 可选）。
+  - type：`feat` / `fix` / `docs` / `style` / `refactor` / `perf` / `test` / `build` / `ci` / `chore` / `revert`。
+  - `style` 仅指代码格式（不改逻辑）；UI/页面视觉改动按效果归 `feat` 或 `fix`。
+  - 构建/依赖变更用 `build`，CI 配置用 `ci`，其余杂项配置才用 `chore`。
+  - summary 简洁描述「做了什么、解决什么问题」，避免空洞措辞（如「修改」「更新」）。
+- 破坏性变更：type 后加 `!` 并在 footer 写 `BREAKING CHANGE:`；关联工单用 `Closes #123`。
+- 生成 commit 文案见 `commit-helper` skill：默认只读暂存区、不自动 `git add`/`commit`。
+- 不要 force push、不要 amend 已推送的历史，除非用户明确要求。
+
+## Pull Request
+- PR 标题遵循同样的 Conventional Commits 风格。
+- PR 描述包含：变更概述、动机、验证方式（如何测试）。
+- 保持 PR 聚焦单一主题，便于 review。
