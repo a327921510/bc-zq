@@ -1,5 +1,5 @@
 # 快捷运维命令（在项目根执行 make <target>）
-# 生产目录示例：/www/wwwroot/byd-archive
+# 生产目录示例：/www/wwwroot/bc-zq
 
 .PHONY: help bootstrap deploy pre-deploy sync sync-one frontend-build api health version
 
@@ -22,8 +22,11 @@ help:
 	@echo "  DEPLOY_RESTART_CMD='supervisorctl restart byd-api' make deploy"
 
 # 首次上机：环境与空库（不拉行情；交易日再 make sync）
+# 需要系统 python3 ≥ 3.10；旧系统自带 pip 9.x 装不上现代 fastapi
 bootstrap:
+	@python3 -c 'import sys; assert sys.version_info >= (3, 10), "需要 Python ≥ 3.10，当前: %s；请用宝塔安装 3.10+ 后再执行" % sys.version.split()[0]'
 	@test -d $(ROOT)/.venv || python3 -m venv $(ROOT)/.venv
+	$(ROOT)/.venv/bin/pip install -U pip setuptools wheel
 	$(ROOT)/.venv/bin/pip install -r $(ROOT)/requirements.txt
 	@test -f $(ROOT)/.env || cp $(ROOT)/.env.example $(ROOT)/.env
 	@test -f $(ROOT)/ops/allowed_ips.conf || cp $(ROOT)/ops/allowed_ips.conf.example $(ROOT)/ops/allowed_ips.conf

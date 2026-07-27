@@ -37,7 +37,7 @@ Nginx include 片段     make health
 ### 1）首次上线（ECS + 宝塔）
 
 ```bash
-cd /www/wwwroot/byd-archive   # 或 git clone 后的项目根
+cd /www/wwwroot/bc-zq   # 或 git clone 后的项目根
 make bootstrap
 # 编辑 .env：DATA_DIR/DB_PATH/BASE_PATH=/zq 等用绝对路径
 # 编辑 ops/allowed_ips.conf：allow 你的公网IP; … deny all;
@@ -47,7 +47,7 @@ make bootstrap
 |------|--------|
 | Supervisor | 启动命令：`.venv/bin/uvicorn backend.src.api:app --host 127.0.0.1 --port 8000 --workers 1` |
 | Nginx | 粘贴 `ops/nginx-site.snippet.conf`（`/zq/` → `:8000`），`include` 白名单 |
-| 计划任务 | Shell，每天 16:00：`/www/wwwroot/byd-archive/backend/scripts/sync_today.sh` |
+| 计划任务 | Shell，每天 16:00：`/www/wwwroot/bc-zq/backend/scripts/sync_today.sh` |
 | 安全组 | 放行 80/443；**勿**对公网放行 8000 |
 
 生产 Nginx：站点把 `/zq/` 反代到 uvicorn，`.env` 中 `BASE_PATH=/zq`。
@@ -55,7 +55,7 @@ make bootstrap
 ### 2）日常发版（防丢库）
 
 ```bash
-cd /www/wwwroot/byd-archive
+cd /www/wwwroot/bc-zq
 # 推荐一键（可选先 pull、再重启）
 DEPLOY_GIT_PULL=1 \
 DEPLOY_RESTART_CMD='supervisorctl restart byd-api' \

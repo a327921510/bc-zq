@@ -269,7 +269,7 @@ project/
 ECS 上建议目录（与宝塔习惯对齐）：
 
 ```
-/www/wwwroot/byd-archive/
+/www/wwwroot/bc-zq/
 ├── backend/
 ├── frontend/dist/           # 或单独站点根目录
 ├── ops/                     # allowed_ips.conf + robots.txt
@@ -312,11 +312,11 @@ timedatectl   # 确认
 
 ### 9.3 上传代码与 Python 环境
 
-1. 宝塔 → 文件 → 创建 `/www/wwwroot/byd-archive/`，上传或 `git clone` 项目。
+1. 宝塔 → 文件 → 创建 `/www/wwwroot/bc-zq/`，上传或 `git clone` 项目。
 2. SSH 进入目录创建虚拟环境并安装依赖：
 
 ```bash
-cd /www/wwwroot/byd-archive
+cd /www/wwwroot/bc-zq
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
@@ -325,14 +325,14 @@ pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
 3. 复制 `.env.example` → `.env`，至少配置：
 
 ```ini
-DATA_DIR=/www/wwwroot/byd-archive/data
-BACKUP_DIR=/www/wwwroot/byd-archive/backups
-DB_PATH=/www/wwwroot/byd-archive/data/archive.db
+DATA_DIR=/www/wwwroot/bc-zq/data
+BACKUP_DIR=/www/wwwroot/bc-zq/backups
+DB_PATH=/www/wwwroot/bc-zq/data/archive.db
 API_HOST=127.0.0.1
 API_PORT=8000
 # 可选：FastAPI 再读同一白名单文件作兜底（Nginx 仍是主门禁）
 IP_WHITELIST_ENABLED=false
-IP_WHITELIST_PATH=/www/wwwroot/byd-archive/ops/allowed_ips.conf
+IP_WHITELIST_PATH=/www/wwwroot/bc-zq/ops/allowed_ips.conf
 ```
 
 4. 初始化库：
@@ -350,7 +350,7 @@ python -m backend.src.sync --code 002594   # 若当日为交易日
 启动命令示例：
 
 ```bash
-/www/wwwroot/byd-archive/.venv/bin/uvicorn backend.src.api:app \
+/www/wwwroot/bc-zq/.venv/bin/uvicorn backend.src.api:app \
   --host 127.0.0.1 --port 8000 --workers 1
 ```
 
@@ -365,15 +365,15 @@ python -m backend.src.sync --code 002594   # 若当日为交易日
 ### 9.5 前端：宝塔网站 + Nginx 反代
 
 1. 宝塔 → 网站 → 添加站点（域名或 ECS IP）。
-2. 网站根目录指向前端构建产物，例如：`/www/wwwroot/byd-archive/frontend/dist`。
+2. 网站根目录指向前端构建产物，例如：`/www/wwwroot/bc-zq/frontend/dist`。
 3. 站点设置 → 配置文件：参考仓库 `ops/nginx-site.snippet.conf`，至少包含 **IP 白名单 include** + `/api/` 反代（路径按 ECS 实际目录改）：
 
 ```nginx
 # 整站门禁：未在名单内的公网 IP → 403
-include /www/wwwroot/byd-archive/ops/allowed_ips.conf;
+include /www/wwwroot/bc-zq/ops/allowed_ips.conf;
 
 location = /robots.txt {
-    root /www/wwwroot/byd-archive/ops;
+    root /www/wwwroot/bc-zq/ops;
     default_type text/plain;
 }
 
@@ -408,7 +408,7 @@ cd frontend && npm ci && npm run build
 **首次部署**
 
 ```bash
-cd /www/wwwroot/byd-archive
+cd /www/wwwroot/bc-zq
 cp ops/allowed_ips.conf.example ops/allowed_ips.conf
 # 编辑 allowed_ips.conf：把 allow 行改成你当前公网 IP，保留末尾 deny all;
 ```
@@ -427,7 +427,7 @@ deny all;
 站点 Nginx 配置里必须有：
 
 ```nginx
-include /www/wwwroot/byd-archive/ops/allowed_ips.conf;
+include /www/wwwroot/bc-zq/ops/allowed_ips.conf;
 ```
 
 保存站点配置后 **重载 Nginx**。未在名单内的访问返回 **403**。
@@ -435,7 +435,7 @@ include /www/wwwroot/byd-archive/ops/allowed_ips.conf;
 **日常开通（换网络 / 新 IP）**
 
 1. 在待访问设备上查公网 IP：浏览器打开 https://ip.sb 或 https://ifconfig.me  
-2. 宝塔 → **文件** → `/www/wwwroot/byd-archive/ops/allowed_ips.conf`  
+2. 宝塔 → **文件** → `/www/wwwroot/bc-zq/ops/allowed_ips.conf`  
 3. 增加一行：`allow 你的IP;`（旧 IP 可注释掉，勿删 `deny all;`）  
 4. 保存 → 宝塔 Nginx **重载**（或「软件商店 → Nginx → 重载」）  
 5. 用该网络打开站点验证；不需要改业务代码、不必重启 uvicorn（Nginx 门禁即时生效）
@@ -462,14 +462,14 @@ include /www/wwwroot/byd-archive/ops/allowed_ips.conf;
 | 项 | 建议值 |
 |----|--------|
 | 任务类型 | Shell 脚本 |
-| 任务名称 | byd-archive-sync |
+| 任务名称 | bc-zq-sync |
 | 执行周期 | 每天 `16:00`（或 `15:30`；仅需交易日生效时可在脚本内判断） |
 | 脚本内容 | 见下 |
 
 ```bash
 #!/bin/bash
 # 推荐直接调仓库脚本（内部 --all-enabled --backup，日志写 logs/sync.log）
-/www/wwwroot/byd-archive/backend/scripts/sync_today.sh
+/www/wwwroot/bc-zq/backend/scripts/sync_today.sh
 ```
 
 要点：
@@ -491,7 +491,7 @@ include /www/wwwroot/byd-archive/ops/allowed_ips.conf;
 **发版标准流程（防丢数据）**
 
 ```bash
-cd /www/wwwroot/byd-archive
+cd /www/wwwroot/bc-zq
 # 一键：备份+migrate → pip → 前端 build →（可选）重启
 DEPLOY_GIT_PULL=1 \
 DEPLOY_RESTART_CMD='supervisorctl restart byd-api' \
