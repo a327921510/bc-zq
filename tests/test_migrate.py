@@ -48,11 +48,27 @@ def test_legacy_db_without_meta_gets_version(tmp_db: Path) -> None:
     conn.commit()
     conn.close()
     assert dbmod.get_schema_version(tmp_db) == 0
-    assert dbmod.migrate(tmp_db) == 1
+    assert dbmod.migrate(tmp_db) == dbmod.TARGET_SCHEMA_VERSION
     assert dbmod.get_symbol("002594")["name"] == "比亚迪"
 
 
-def test_backup_with_tag_unique(tmp_db: Path) -> None:
+def test_migrate_v2_adds_margin_table(tmp_db: Path) -> None:
+    """已有 v1 库升级到 v2 应建 margin_daily，且不丢行情。"""
+    dbmod.init_db(tmp_db)
+    # 模拟卡在 v1：先把版本戳回退（表已齐全）
+    with dbmod.get_conn(tmp_db) as conn:
+        conn.execute(
+            "UPDATE schema_meta SET version = 1, updated_at = ?",
+            ("2026-01-01 00:00:00",),
+        )
+        conn.execute("DROP TABLE IF EXISTS margin_daily")
+    assert dbmod.get_schema_version(tmp_db) == 1
+    assert dbmod.migrate(tmp_db) == 2
+    dbmod.upsert_margin_rows(
+        [{"code": "002594", "trade_date": "2026-09-02", "rzye": 1.0}]
+    )
+    assert dbmod.get_margin("002594", "2026-09-02")["rzye"] == 1.0
+
     dbmod.init_db(tmp_db)
     p1 = dbmod.backup_db(tag="pre_deploy")
     p2 = dbmod.backup_db(tag="pre_deploy")

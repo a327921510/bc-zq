@@ -21,6 +21,7 @@ from .config import ROOT_DIR, ensure_dirs, settings
 from .db import (
     delete_symbol,
     get_daily_summary,
+    get_margin,
     get_minutes,
     get_price_volume,
     get_symbol,
@@ -28,6 +29,7 @@ from .db import (
     get_ticks,
     infer_market,
     init_db,
+    list_margin,
     list_symbols,
     list_sync_logs,
     list_trade_dates,
@@ -322,9 +324,24 @@ def api_price_volume(code: str = Query(...), date: str = Query(...)) -> dict[str
     return {"code": code, "date": date, "items": rows}
 
 
+@app.get("/api/margin")
+def api_margin(
+    code: str = Query(..., min_length=6, max_length=6),
+    date: str | None = Query(None, description="YYYY-MM-DD；省略则返回近期列表"),
+    limit: int = Query(30, ge=1, le=200),
+) -> dict[str, Any]:
+    """个股两融：指定日返回单条，否则返回近期列表。"""
+    if date:
+        row = get_margin(code, date)
+        if not row:
+            raise HTTPException(404, f"no margin for {code} {date}")
+        return {"code": code, "date": date, "item": row}
+    return {"code": code, "items": list_margin(code, limit=limit)}
+
+
 @app.get("/api/day")
 def api_day(code: str = Query(...), date: str = Query(...)) -> dict[str, Any]:
-    """回放页一次取齐：摘要 + 分钟 + 明细 + 分价 + 同步状态。"""
+    """回放页一次取齐：摘要 + 分钟 + 明细 + 分价 + 两融 + 同步状态。"""
     minutes = get_minutes(code, date)
     ticks = get_ticks(code, date)
     if not minutes and not ticks:
@@ -336,6 +353,7 @@ def api_day(code: str = Query(...), date: str = Query(...)) -> dict[str, Any]:
         "minutes": minutes,
         "ticks": ticks,
         "price_volume": get_price_volume(code, date),
+        "margin": get_margin(code, date),
         "sync": (get_sync_log(code, date) or [None])[0],
     }
 

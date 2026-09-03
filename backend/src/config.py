@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     db_path: Path = ROOT_DIR / "data" / "archive.db"
     api_host: str = "127.0.0.1"
     api_port: int = 8000
-    # 单域名子路径部署，如 /zq；空或 / 表示挂在域名根
+    # URL 子路径部署，如 /zq；空或 / 表示挂在站点根
     base_path: str = "/zq"
     http_timeout: float = 30.0
     # 生产建议 Nginx 白名单为主；True 时 FastAPI 再读同一份 ops/allowed_ips.conf 兜底

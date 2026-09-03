@@ -101,3 +101,38 @@ def test_set_symbol_enabled(tmp_db: Path) -> None:
     dbmod.set_symbol_enabled("002594", False)
     assert dbmod.get_symbol("002594")["enabled"] == 0
     assert all(s["code"] != "002594" for s in dbmod.list_symbols(enabled_only=True))
+
+
+def test_upsert_margin_idempotent(tmp_db: Path) -> None:
+    rows = [
+        {
+            "code": "002594",
+            "trade_date": "2026-09-02",
+            "rzye": 1e10,
+            "rzmre": 1e8,
+            "rzche": 2e8,
+            "rzjme": -1e8,
+            "rqye": 4e7,
+            "rqyl": 470000,
+            "rqmcl": 38000,
+            "rqchl": 9000,
+            "rzrqye": 1.01e10,
+            "rzyezb": 4.2,
+        }
+    ]
+    assert dbmod.upsert_margin_rows(rows) == 1
+    assert dbmod.upsert_margin_rows([{**rows[0], "rzye": 2e10}]) == 1
+    got = dbmod.get_margin("002594", "2026-09-02")
+    assert got is not None
+    assert got["rzye"] == 2e10
+    assert got["rzjme"] == -1e8
+    assert dbmod.list_margin("002594", limit=5)[0]["trade_date"] == "2026-09-02"
+
+
+def test_purge_symbol_clears_margin(tmp_db: Path) -> None:
+    dbmod.upsert_margin_rows(
+        [{"code": "002594", "trade_date": "2026-09-02", "rzye": 1.0}]
+    )
+    assert dbmod.get_margin("002594", "2026-09-02")
+    dbmod.delete_symbol("002594", purge_data=True)
+    assert dbmod.get_margin("002594", "2026-09-02") is None

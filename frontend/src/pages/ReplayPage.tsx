@@ -26,7 +26,7 @@ import dayjs, { type Dayjs } from "dayjs";
 import { fetchDay, fetchDays, fetchSymbols } from "../api";
 import IntradayCharts from "../components/IntradayCharts";
 import type { DayPayload, SymbolItem } from "../types";
-import { fmt, isEnabled, sideLabel } from "../utils/format";
+import { fmt, fmtYi, isEnabled, sideLabel } from "../utils/format";
 
 const { Text } = Typography;
 const DATE_FMT = "YYYY-MM-DD";
@@ -249,6 +249,61 @@ export default function ReplayPage() {
           </Col>
         </Row>
       </Card>
+
+      {day?.margin ? (
+        <Card size="small" title="融资融券">
+          <Row gutter={[16, 8]}>
+            <Col>
+              <Statistic title="融资余额" value={fmtYi(day.margin.rzye)} />
+            </Col>
+            <Col>
+              <Statistic title="融资买入" value={fmtYi(day.margin.rzmre)} />
+            </Col>
+            <Col>
+              <Statistic
+                title="融资净买"
+                value={fmtYi(day.margin.rzjme)}
+                valueStyle={{
+                  color:
+                    day.margin.rzjme == null
+                      ? undefined
+                      : day.margin.rzjme >= 0
+                        ? "#cf1322"
+                        : "#389e0d",
+                }}
+              />
+            </Col>
+            <Col>
+              <Statistic title="融券余额" value={fmtYi(day.margin.rqye)} />
+            </Col>
+            <Col>
+              <Statistic
+                title="融券余量"
+                value={
+                  day.margin.rqyl != null
+                    ? Math.round(day.margin.rqyl).toLocaleString()
+                    : "-"
+                }
+              />
+            </Col>
+            <Col>
+              <Statistic title="两融余额" value={fmtYi(day.margin.rzrqye)} />
+            </Col>
+            <Col>
+              <Statistic
+                title="融资占流通%"
+                value={day.margin.rzyezb != null ? fmt(day.margin.rzyezb) : "-"}
+              />
+            </Col>
+          </Row>
+        </Card>
+      ) : day ? (
+        <Alert
+          type="info"
+          showIcon
+          message="当日暂无两融数据（交易所通常次日上午才更新）"
+        />
+      ) : null}
 
       <Row gutter={16}>
         <Col xs={24} lg={16}>

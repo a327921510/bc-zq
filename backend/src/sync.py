@@ -1,6 +1,7 @@
 """每日收盘同步入口：拉东财 → 入库 → 可选备份 DB。
 
 失败只更新 sync_log，不清空已有当日行情，避免接口抖动丢档。
+两融走东财 datacenter，交易所通常 T+1 上午才更新；失败不拖垮分时同步。
 """
 
 from __future__ import annotations
@@ -11,8 +12,17 @@ from datetime import date, datetime
 from typing import Any
 
 from .config import ROOT_DIR, ensure_dirs
-from .db import backup_db, get_conn, get_symbol, init_db, list_symbols, replace_day_data, upsert_symbol
-from .fetch.eastmoney import fetch_day
+from .db import (
+    backup_db,
+    get_conn,
+    get_symbol,
+    init_db,
+    list_symbols,
+    replace_day_data,
+    upsert_margin_rows,
+    upsert_symbol,
+)
+from .fetch.eastmoney import fetch_day, fetch_margin_for_sync
 
 
 def _today() -> str:
@@ -35,6 +45,29 @@ def _log_fail(code: str, trade_date: str, message: str) -> None:
             """,
             (code, trade_date, message, now),
         )
+
+
+def _sync_margin(code: str, trade_date: str | None) -> dict[str, Any]:
+    """尽力拉近几日两融并入库；空数据 / 异常只记结果，不抛给上层。"""
+    try:
+        result = fetch_margin_for_sync(code, trade_date=trade_date)
+        rows = result.get("rows") or []
+        n = upsert_margin_rows(rows) if rows else 0
+        msg_parts = [f"margin_rows={n}"]
+        if result.get("raw_path"):
+            msg_parts.append(f"raw={result['raw_path']}")
+        if result.get("errors"):
+            msg_parts.append(f"warnings={result['errors']}")
+        return {
+            "ok": n > 0,
+            "count": n,
+            "message": "; ".join(msg_parts),
+            "has_trade_date": bool(
+                trade_date and any(r.get("trade_date") == trade_date for r in rows)
+            ),
+        }
+    except Exception as e:
+        return {"ok": False, "count": 0, "message": f"margin:{e}", "has_trade_date": False}
 
 
 def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
@@ -67,6 +100,8 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
 
         if status == "fail":
             _log_fail(code, resolved, msg)
+            # 分时失败仍尝试补两融（历史日可回补）
+            margin_info = _sync_margin(code, trade_date or resolved)
         else:
             replace_day_data(
                 code=code,
@@ -86,6 +121,24 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
                     market=market,
                     enabled=int(symbol.get("enabled", 1)),
                 )
+            margin_info = _sync_margin(code, resolved)
+            # 两融信息追加进 sync_log message，便于排查；不改 status
+            if margin_info.get("message"):
+                margin_note = margin_info["message"]
+                with get_conn() as conn:
+                    row = conn.execute(
+                        "SELECT message FROM sync_log WHERE code=? AND trade_date=?",
+                        (code, resolved),
+                    ).fetchone()
+                    old = (row["message"] if row else "") or msg
+                    conn.execute(
+                        """
+                        UPDATE sync_log SET message = ?
+                        WHERE code = ? AND trade_date = ?
+                        """,
+                        (f"{old}; {margin_note}", code, resolved),
+                    )
+                msg = f"{msg}; {margin_note}"
 
         return {
             "code": code,
@@ -95,6 +148,7 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
             "minute_count": len(result["minutes"]),
             "message": msg,
             "name": result.get("name") or symbol.get("name"),
+            "margin_count": margin_info.get("count", 0),
         }
     except Exception as e:
         day = trade_date or _today()
@@ -136,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"[ok] {info['code']} {info.get('name') or ''} "
                 f"{info['trade_date']} ticks={info['tick_count']} "
-                f"minutes={info['minute_count']} status={info['status']}"
+                f"minutes={info['minute_count']} margin={info.get('margin_count', 0)} "
+                f"status={info['status']}"
             )
             if info["status"] == "fail":
                 failed += 1

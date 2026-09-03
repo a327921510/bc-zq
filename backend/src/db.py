@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_minutes_day ON minutes(code, trade_date);
 """
 
 # 代码期望的库版本；新增迁移时递增，并在 MIGRATIONS 注册对应函数
-TARGET_SCHEMA_VERSION = 1
+TARGET_SCHEMA_VERSION = 2
 
 # 首发关注股；init 时 upsert，不覆盖 enabled 以便用户手工停用
 DEFAULT_SYMBOLS = [
@@ -174,11 +174,35 @@ def _migrate_to_1(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
 
 
+def _migrate_to_2(conn: sqlite3.Connection) -> None:
+    """v2：个股两融日表（东财 datacenter）；与分时归档按 (code, trade_date) 对齐。"""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS margin_daily (
+          code         TEXT NOT NULL,
+          trade_date   TEXT NOT NULL,
+          rzye         REAL,
+          rzmre        REAL,
+          rzche        REAL,
+          rzjme        REAL,
+          rqye         REAL,
+          rqyl         REAL,
+          rqmcl        REAL,
+          rqchl        REAL,
+          rzrqye       REAL,
+          rzyezb       REAL,
+          synced_at    TEXT NOT NULL,
+          PRIMARY KEY (code, trade_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_margin_day ON margin_daily(code, trade_date);
+        """
+    )
+
+
 # version -> 迁移函数；只允许「向前」增量改表，禁止 DROP 整库
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrate_to_1,
-    # 示例（将来加列时照此追加，并把 TARGET_SCHEMA_VERSION 改为 2）：
-    # 2: lambda conn: conn.execute("ALTER TABLE sync_log ADD COLUMN duration_ms INTEGER"),
+    2: _migrate_to_2,
 }
 
 
@@ -335,7 +359,7 @@ def delete_symbol(code: str, *, purge_data: bool = False) -> bool:
         if not exists:
             return False
         if purge_data:
-            for table in ("ticks", "minutes", "daily_summary", "sync_log"):
+            for table in ("ticks", "minutes", "daily_summary", "sync_log", "margin_daily"):
                 conn.execute(f"DELETE FROM {table} WHERE code = ?", (code,))
         conn.execute("DELETE FROM symbols WHERE code = ?", (code,))
     return True
@@ -575,6 +599,100 @@ def get_sync_log(code: str, trade_date: str | None = None) -> list[dict[str, Any
                 """,
                 (code,),
             ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_margin_rows(rows: list[dict[str, Any]]) -> int:
+    """幂等写入多日两融；按 (code, trade_date) 覆盖。返回写入条数。"""
+    if not rows:
+        return 0
+    now = _now_str()
+    with get_conn() as conn:
+        conn.executemany(
+            """
+            INSERT INTO margin_daily(
+              code, trade_date, rzye, rzmre, rzche, rzjme,
+              rqye, rqyl, rqmcl, rqchl, rzrqye, rzyezb, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(code, trade_date) DO UPDATE SET
+              rzye=excluded.rzye,
+              rzmre=excluded.rzmre,
+              rzche=excluded.rzche,
+              rzjme=excluded.rzjme,
+              rqye=excluded.rqye,
+              rqyl=excluded.rqyl,
+              rqmcl=excluded.rqmcl,
+              rqchl=excluded.rqchl,
+              rzrqye=excluded.rzrqye,
+              rzyezb=excluded.rzyezb,
+              synced_at=excluded.synced_at
+            """,
+            [
+                (
+                    r["code"],
+                    r["trade_date"],
+                    r.get("rzye"),
+                    r.get("rzmre"),
+                    r.get("rzche"),
+                    r.get("rzjme"),
+                    r.get("rqye"),
+                    r.get("rqyl"),
+                    r.get("rqmcl"),
+                    r.get("rqchl"),
+                    r.get("rzrqye"),
+                    r.get("rzyezb"),
+                    now,
+                )
+                for r in rows
+                if r.get("code") and r.get("trade_date")
+            ],
+        )
+    return len([r for r in rows if r.get("code") and r.get("trade_date")])
+
+
+def get_margin(code: str, trade_date: str) -> dict[str, Any] | None:
+    """单票单日两融；无记录返回 None。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT code, trade_date, rzye, rzmre, rzche, rzjme,
+                   rqye, rqyl, rqmcl, rqchl, rzrqye, rzyezb, synced_at
+            FROM margin_daily
+            WHERE code = ? AND trade_date = ?
+            """,
+            (code, trade_date),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_margin(
+    code: str,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limit: int = 60,
+) -> list[dict[str, Any]]:
+    """单票两融历史，新→旧。"""
+    limit = max(1, min(limit, 500))
+    clauses = ["code = ?"]
+    params: list[Any] = [code]
+    if start_date:
+        clauses.append("trade_date >= ?")
+        params.append(start_date)
+    if end_date:
+        clauses.append("trade_date <= ?")
+        params.append(end_date)
+    params.append(limit)
+    sql = f"""
+        SELECT code, trade_date, rzye, rzmre, rzche, rzjme,
+               rqye, rqyl, rqmcl, rqchl, rzrqye, rzyezb, synced_at
+        FROM margin_daily
+        WHERE {" AND ".join(clauses)}
+        ORDER BY trade_date DESC
+        LIMIT ?
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -4,7 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 
 /**
  * 前端构建：产物输出到 dist，由 FastAPI / Nginx 同源托管。
- * base=/zq/：单域名子路径部署；开发时把 /zq/api 代理到本机 uvicorn。
+ * base=/zq/：站点子路径部署；开发时把 /zq/api 代理到本机 uvicorn。
  */
 export default defineConfig({
   base: "/zq/",

@@ -129,7 +129,7 @@ ORDER BY price;
 ┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
 │ 宝塔计划任务      │         │ 后端 API         │         │ Nginx（宝塔站点） │
 │ 交易日 16:00     │         │ FastAPI/uvicorn  │◄────────│ 前端静态 + 反代   │
-│ 跑 sync 拉东财   │────────►│ :8000（内网）     │         │ 80/443 对外      │
+│ 跑 sync 拉东财   │────────►│ :8000（内网）     │         │ 80 对外（HTTP）  │
 └─────────────────┘         └────────┬────────┘         └─────────────────┘
                                      ▼
                             ┌─────────────────┐
@@ -298,9 +298,8 @@ timedatectl   # 确认
 
 3. 安全组放行：
    - `22`（SSH，建议仅自己的 IP）
-   - `80` / `443`（Web）
+   - `80`（HTTP Web；浏览器访问 `http://ECS公网IP/zq/`）
    - **不要**对公网放行 `8000`（API 只给本机 Nginx 反代）
-4. （可选）解析域名 A 记录到 ECS 公网 IP，便于 HTTPS。
 
 ### 9.2 安装宝塔面板
 
@@ -360,13 +359,13 @@ python -m backend.src.sync --code 002594   # 若当日为交易日
 - SQLite 用 **1 worker**，避免多进程写库锁冲突（读多写少；写主要在 cron）。
 - 进程用户建议与 Nginx/站点用户一致或可读 `data/`、`backups/`。
 
-健康检查：本机 `curl http://127.0.0.1:8000/api/health`。
+健康检查：本机 `curl http://127.0.0.1:8000/zq/api/health`。
 
 ### 9.5 前端：宝塔网站 + Nginx 反代
 
-1. 宝塔 → 网站 → 添加站点（域名或 ECS IP）。
+1. 宝塔 → 网站 → 添加站点：「域名」栏填 **ECS 公网 IP**。
 2. 网站根目录指向前端构建产物，例如：`/www/wwwroot/bc-zq/frontend/dist`。
-3. 站点设置 → 配置文件：参考仓库 `ops/nginx-site.snippet.conf`，至少包含 **IP 白名单 include** + `/api/` 反代（路径按 ECS 实际目录改）：
+3. 站点设置 → 配置文件：参考仓库 `ops/nginx-site.snippet.conf`，至少包含 **IP 白名单 include** + `/zq/` 反代（路径按 ECS 实际目录改）：
 
 ```nginx
 # 整站门禁：未在名单内的公网 IP → 403
@@ -377,28 +376,28 @@ location = /robots.txt {
     default_type text/plain;
 }
 
-location /api/ {
-    proxy_pass http://127.0.0.1:8000/api/;
+location = /zq {
+    return 301 /zq/;
+}
+
+location ^~ /zq/ {
+    proxy_pass http://127.0.0.1:8000/zq/;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 300s;
 }
-
-# SPA 前端如使用 history 路由，可追加：
-# location / {
-#     try_files $uri $uri/ /index.html;
-# }
 ```
 
-4. （推荐）站点 → SSL → 申请 Let's Encrypt；强制 HTTPS。
-5. **访问控制以 IP 白名单为准**（见下节 9.5a），不要依赖「密码访问」作为主方案。
+4. **访问控制以 IP 白名单为准**（见下节 9.5a），不要依赖「密码访问」作为主方案。  
+   Nginx 的 `/zq/` 须写成 `location ^~ /zq/`，否则宝塔默认的 js/css 正则可能抢走静态资源导致 404。
 
 前端构建（在开发机或 ECS 上）：
 
 ```bash
 cd frontend && npm ci && npm run build
-# 将 dist/ 同步到网站根目录
+# 将 dist/ 同步到网站根目录（若 Nginx 由后端托管静态则可省略单独站点根）
 ```
 
 ### 9.5a IP 白名单（主访问控制）
@@ -509,7 +508,7 @@ DEPLOY_RESTART_CMD='supervisorctl restart byd-api' \
 - [ ] 已从 `ops/allowed_ips.conf.example` 复制并配置 `ops/allowed_ips.conf`
 - [ ] 站点 Nginx 已 `include` 白名单文件并重载
 - [ ] 白名单内 IP 可打开回放页；名单外 IP 访问为 403
-- [ ] `/api/health` 经域名可访问（经 Nginx，非直接 8000）；名单外同样 403
+- [ ] `/zq/api/health` 经 Nginx 可访问（`http://ECS公网IP/zq/api/health`，非直接 8000）；名单外同样 403
 - [ ] `python -m backend.src.db version` 输出 ≥ 1
 - [ ] 手动执行一次 `pre_deploy.sh` 或 sync 脚本成功，`backups/db/` 有文件
 - [ ] 宝塔计划任务列表中能看到 16:00 任务

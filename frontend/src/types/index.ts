@@ -56,6 +56,23 @@ export interface SyncLogItem {
   synced_at: string;
 }
 
+/** 个股单日融资融券（东财 datacenter）；金额单位为元。 */
+export interface MarginDaily {
+  code: string;
+  trade_date: string;
+  rzye: number | null;
+  rzmre: number | null;
+  rzche: number | null;
+  rzjme: number | null;
+  rqye: number | null;
+  rqyl: number | null;
+  rqmcl: number | null;
+  rqchl: number | null;
+  rzrqye: number | null;
+  rzyezb: number | null;
+  synced_at?: string;
+}
+
 export interface SyncResult {
   code: string;
   trade_date?: string | null;
@@ -64,6 +81,7 @@ export interface SyncResult {
   minute_count?: number | null;
   message?: string | null;
   name?: string | null;
+  margin_count?: number | null;
   wait_seconds?: number;
   force_required?: boolean;
 }
@@ -83,5 +101,6 @@ export interface DayPayload {
   minutes: MinutePoint[];
   ticks: TickItem[];
   price_volume: PriceVolumeItem[];
+  margin: MarginDaily | null;
   sync: SyncLogItem | null;
 }

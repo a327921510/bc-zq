@@ -1,6 +1,7 @@
-"""东财网页行情适配器：拉当日明细 / 分时 / 报价，落 raw JSON 后交给入库。
+"""东财网页行情适配器：拉当日明细 / 分时 / 报价，以及数据中心两融明细。
 
 注意：免费 details 只覆盖「当前交易日会话」，不能按历史日期回补。
+两融（RPTA_WEB_RZRQ_GGMX）可按历史日回补，但交易所通常次日上午才更新 T 日。
 """
 
 from __future__ import annotations
@@ -143,6 +144,150 @@ def save_raw(code: str, trade_date: str, payload: dict[str, Any]) -> Path:
     path = day_dir / f"{trade_date}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------
+# 两融：走东财数据中心（与 push2 行情域名不同）；交易所通常次日上午才更新 T 日
+# ---------------------------------------------------------------------------
+
+DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+# 个股融资融券明细报表名（东财网页「数据中心 → 融资融券」同源）
+MARGIN_REPORT = "RPTA_WEB_RZRQ_GGMX"
+
+
+def _parse_margin_row(row: dict[str, Any]) -> dict[str, Any]:
+    """东财大写字段 → 入库用 snake_case；DATE 截成 YYYY-MM-DD。"""
+    raw_date = str(row.get("DATE") or "")
+    trade_date = raw_date[:10] if len(raw_date) >= 10 else raw_date
+    return {
+        "code": str(row.get("SCODE") or ""),
+        "trade_date": trade_date,
+        "name": row.get("SECNAME"),
+        "rzye": row.get("RZYE"),
+        "rzmre": row.get("RZMRE"),
+        "rzche": row.get("RZCHE"),
+        "rzjme": row.get("RZJME"),
+        "rqye": row.get("RQYE"),
+        "rqyl": row.get("RQYL"),
+        "rqmcl": row.get("RQMCL"),
+        "rqchl": row.get("RQCHL"),
+        "rzrqye": row.get("RZRQYE"),
+        "rzyezb": row.get("RZYEZB"),  # 融资余额占流通市值比（%）
+    }
+
+
+def fetch_margin(
+    client: httpx.Client,
+    code: str,
+    *,
+    trade_date: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    page_size: int = 50,
+) -> list[dict[str, Any]]:
+    """拉取个股两融明细；可按单日或日期区间过滤。
+
+    无日期条件时返回该票最新 page_size 条（按 DATE 降序）。
+    """
+    filters = [f'(SCODE="{code}")']
+    if trade_date:
+        filters.append(f"(DATE='{trade_date}')")
+    else:
+        if start_date:
+            filters.append(f"(DATE>='{start_date}')")
+        if end_date:
+            filters.append(f"(DATE<='{end_date}')")
+
+    params = {
+        "reportName": MARGIN_REPORT,
+        "columns": "ALL",
+        "filter": "".join(filters),
+        "pageNumber": "1",
+        "pageSize": str(max(1, min(page_size, 500))),
+        "sortColumns": "DATE",
+        "sortTypes": "-1",
+        "source": "WEB",
+        "client": "WEB",
+    }
+    resp = client.get(
+        DATACENTER_URL,
+        params=params,
+        headers={**UA, "Referer": "https://data.eastmoney.com/"},
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    rows = ((payload.get("result") or {}).get("data")) or []
+    return [_parse_margin_row(r) for r in rows if r]
+
+
+def save_raw_margin(code: str, tag: str, rows: list[dict[str, Any]]) -> Path:
+    """两融原始解析结果落盘，与分时 raw 分文件，避免互相覆盖。"""
+    ensure_dirs()
+    day_dir = settings.backup_dir / "raw" / code
+    day_dir.mkdir(parents=True, exist_ok=True)
+    path = day_dir / f"margin_{tag}.json"
+    path.write_text(
+        json.dumps({"source": "eastmoney_datacenter", "rows": rows}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def fetch_margin_for_sync(
+    code: str,
+    *,
+    trade_date: str | None = None,
+    lookback_days: int = 10,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    """同步用：优先拉指定日；并补近 lookback_days 自然日区间（覆盖 T+1 才出的两融）。
+
+    返回 {rows, raw_path, errors}；空结果不抛错，由调用方记 warning。
+    """
+    from datetime import timedelta
+
+    own = client is None
+    client = client or httpx.Client(
+        headers=UA,
+        timeout=settings.http_timeout,
+        follow_redirects=True,
+    )
+    errors: list[str] = []
+    collected: dict[str, dict[str, Any]] = {}
+    try:
+        end = date.today()
+        start = end - timedelta(days=max(1, lookback_days))
+        try:
+            wait_eastmoney_gap()
+            for row in fetch_margin(
+                client,
+                code,
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+                page_size=50,
+            ):
+                if row.get("trade_date") and row.get("code"):
+                    collected[row["trade_date"]] = row
+        except Exception as e:
+            errors.append(f"margin_range:{e}")
+
+        # 指定日若不在区间结果里，再单日补一次（容错 filter 边界）
+        if trade_date and trade_date not in collected:
+            try:
+                wait_eastmoney_gap()
+                for row in fetch_margin(client, code, trade_date=trade_date, page_size=5):
+                    if row.get("trade_date") and row.get("code"):
+                        collected[row["trade_date"]] = row
+            except Exception as e:
+                errors.append(f"margin_day:{e}")
+
+        rows = sorted(collected.values(), key=lambda r: r["trade_date"], reverse=True)
+        tag = trade_date or end.isoformat()
+        raw_path = save_raw_margin(code, tag, rows) if rows else None
+        return {"rows": rows, "raw_path": str(raw_path) if raw_path else None, "errors": errors}
+    finally:
+        if own:
+            client.close()
 
 
 def fetch_day(

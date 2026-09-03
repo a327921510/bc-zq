@@ -48,9 +48,9 @@ make bootstrap
 | Supervisor | 启动命令：`.venv/bin/uvicorn backend.src.api:app --host 127.0.0.1 --port 8000 --workers 1` |
 | Nginx | 粘贴 `ops/nginx-site.snippet.conf`（`/zq/` → `:8000`），`include` 白名单 |
 | 计划任务 | Shell，每天 16:00：`/www/wwwroot/bc-zq/backend/scripts/sync_today.sh` |
-| 安全组 | 放行 80/443；**勿**对公网放行 8000 |
+| 安全组 | 放行 **80**；**勿**对公网放行 8000 |
 
-生产 Nginx：站点把 `/zq/` 反代到 uvicorn，`.env` 中 `BASE_PATH=/zq`。
+生产访问：`http://ECS公网IP/zq/`。Nginx 把 `/zq/` 反代到 uvicorn，`.env` 中 `BASE_PATH=/zq`。
 
 ### 2）日常发版（防丢库）
 

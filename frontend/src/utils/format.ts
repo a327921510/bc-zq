@@ -7,6 +7,12 @@ export function fmt(n: number | null | undefined, digits = 2): string {
   return Number(n).toFixed(digits);
 }
 
+/** 金额（元）→ 亿元展示；两融余额常用。 */
+export function fmtYi(n: number | null | undefined, digits = 2): string {
+  if (n == null || Number.isNaN(n)) return "-";
+  return `${(Number(n) / 1e8).toFixed(digits)}亿`;
+}
+
 export function sideLabel(side: string | null | undefined): string {
   if (side === "B") return "买";
   if (side === "S") return "卖";
