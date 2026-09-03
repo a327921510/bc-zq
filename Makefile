@@ -1,7 +1,7 @@
 # 快捷运维命令（在项目根执行 make <target>）
 # 生产目录示例：/www/wwwroot/bc-zq
 
-.PHONY: help bootstrap deploy pre-deploy sync sync-one frontend-build api health version
+.PHONY: help bootstrap deploy pre-deploy sync sync-one sync-margin frontend-build api health version
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 
@@ -10,8 +10,9 @@ help:
 	@echo "  make bootstrap       # 首次：venv + 依赖 + .env + 建库"
 	@echo "  make deploy          # 发版：备份/迁移 + pip + 前端 build"
 	@echo "  make pre-deploy      # 仅备份库 + schema migrate"
-	@echo "  make sync            # 同步全部 enabled 标的并备份 DB"
-	@echo "  make sync-one CODE=002594  # 同步单只"
+	@echo "  make sync            # 收盘同步分时（全部 enabled）并备份 DB"
+	@echo "  make sync-one CODE=002594  # 同步单只分时"
+	@echo "  make sync-margin     # 仅同步两融（计划任务 10:10）"
 	@echo "  make frontend-build  # 仅构建前端"
 	@echo "  make api             # 前台启动 uvicorn（开发/临时）"
 	@echo "  make health          # 本机健康检查"
@@ -47,6 +48,10 @@ sync:
 sync-one:
 	@test -n "$(CODE)" || (echo "用法: make sync-one CODE=002594" >&2; exit 1)
 	cd $(ROOT) && $(ROOT)/.venv/bin/python -m backend.src.sync --code $(CODE) --backup
+
+# 两融独立任务（生产建议宝塔每天 10:10）
+sync-margin:
+	$(ROOT)/backend/scripts/sync_margin.sh
 
 frontend-build:
 	cd $(ROOT)/frontend && npm ci && npm run build

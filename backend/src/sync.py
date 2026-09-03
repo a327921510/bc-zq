@@ -1,7 +1,8 @@
-"""每日收盘同步入口：拉东财 → 入库 → 可选备份 DB。
+"""同步入口：分时收盘归档 + 两融独立补拉。
 
-失败只更新 sync_log，不清空已有当日行情，避免接口抖动丢档。
-两融走东财 datacenter，交易所通常 T+1 上午才更新；失败不拖垮分时同步。
+- 分时：交易日收盘后拉东财当日明细/分时（免费源不能回补历史明细）。
+- 两融：交易所通常次日上午才更新 T 日，由独立任务在约 10:10 补拉；
+  失败不清空已有行情；分时任务默认不拉两融，避免 16:00 白跑。
 """
 
 from __future__ import annotations
@@ -47,31 +48,53 @@ def _log_fail(code: str, trade_date: str, message: str) -> None:
         )
 
 
-def _sync_margin(code: str, trade_date: str | None) -> dict[str, Any]:
-    """尽力拉近几日两融并入库；空数据 / 异常只记结果，不抛给上层。"""
-    try:
-        result = fetch_margin_for_sync(code, trade_date=trade_date)
-        rows = result.get("rows") or []
-        n = upsert_margin_rows(rows) if rows else 0
-        msg_parts = [f"margin_rows={n}"]
-        if result.get("raw_path"):
-            msg_parts.append(f"raw={result['raw_path']}")
-        if result.get("errors"):
-            msg_parts.append(f"warnings={result['errors']}")
-        return {
-            "ok": n > 0,
-            "count": n,
-            "message": "; ".join(msg_parts),
-            "has_trade_date": bool(
-                trade_date and any(r.get("trade_date") == trade_date for r in rows)
-            ),
-        }
-    except Exception as e:
-        return {"ok": False, "count": 0, "message": f"margin:{e}", "has_trade_date": False}
+def sync_margin_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
+    """仅同步个股两融（可回补近几日）；不打分时接口。
+
+    trade_date 可选：优先确保该日落库；缺省则拉近 lookback 窗口内有的日期。
+    """
+    init_db()
+    symbol = get_symbol(code)
+    if not symbol:
+        raise ValueError(f"unknown symbol: {code} (add via API or db init first)")
+
+    result = fetch_margin_for_sync(code, trade_date=trade_date)
+    rows = result.get("rows") or []
+    n = upsert_margin_rows(rows) if rows else 0
+    msg_parts = [f"margin_rows={n}"]
+    if result.get("raw_path"):
+        msg_parts.append(f"raw={result['raw_path']}")
+    if result.get("errors"):
+        msg_parts.append(f"warnings={result['errors']}")
+    msg = "; ".join(msg_parts)
+
+    # 无行视为失败，便于计划任务日志告警；周末/无更新日可能经常为 0
+    status = "ok" if n > 0 else "fail"
+    if result.get("errors") and n > 0:
+        status = "partial"
+
+    return {
+        "code": code,
+        "trade_date": trade_date or (rows[0]["trade_date"] if rows else _today()),
+        "status": status,
+        "tick_count": None,
+        "minute_count": None,
+        "message": msg,
+        "name": symbol.get("name"),
+        "margin_count": n,
+    }
 
 
-def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
-    """同步单票；有数据则幂等覆盖，空结果 / 异常则 fail 且保留旧数据。"""
+def sync_one(
+    code: str,
+    trade_date: str | None = None,
+    *,
+    with_margin: bool = False,
+) -> dict[str, Any]:
+    """同步单票分时；默认不拉两融（两融改由次日上午独立任务）。
+
+    with_margin=True 时顺带补两融，供手工补数；失败不拖垮分时入库。
+    """
     init_db()
     symbol = get_symbol(code)
     if not symbol:
@@ -98,10 +121,9 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
             if not result["ticks"] and not result["minutes"]:
                 msg = "empty ticks and minutes"
 
+        margin_count = 0
         if status == "fail":
             _log_fail(code, resolved, msg)
-            # 分时失败仍尝试补两融（历史日可回补）
-            margin_info = _sync_margin(code, trade_date or resolved)
         else:
             replace_day_data(
                 code=code,
@@ -121,10 +143,12 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
                     market=market,
                     enabled=int(symbol.get("enabled", 1)),
                 )
-            margin_info = _sync_margin(code, resolved)
-            # 两融信息追加进 sync_log message，便于排查；不改 status
-            if margin_info.get("message"):
-                margin_note = margin_info["message"]
+
+        if with_margin:
+            margin_info = sync_margin_one(code, trade_date=resolved)
+            margin_count = int(margin_info.get("margin_count") or 0)
+            margin_note = margin_info.get("message") or ""
+            if margin_note and status != "fail":
                 with get_conn() as conn:
                     row = conn.execute(
                         "SELECT message FROM sync_log WHERE code=? AND trade_date=?",
@@ -148,7 +172,7 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
             "minute_count": len(result["minutes"]),
             "message": msg,
             "name": result.get("name") or symbol.get("name"),
-            "margin_count": margin_info.get("count", 0),
+            "margin_count": margin_count,
         }
     except Exception as e:
         day = trade_date or _today()
@@ -157,15 +181,26 @@ def sync_one(code: str, trade_date: str | None = None) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Sync Eastmoney intraday archive")
+    parser = argparse.ArgumentParser(description="Sync Eastmoney intraday / margin archive")
     parser.add_argument("--code", help="stock code, e.g. 002594")
     parser.add_argument(
         "--date",
         dest="trade_date",
-        help="label date YYYY-MM-DD（源仍是当日会话，不能真回补历史）",
+        help="YYYY-MM-DD；分时仅为标签日；两融可按该日优先补拉",
     )
     parser.add_argument("--all-enabled", action="store_true", help="sync all enabled symbols")
     parser.add_argument("--backup", action="store_true", help="copy db after successful sync")
+    # 两融独立任务：次日上午用，不打分时接口
+    parser.add_argument(
+        "--margin-only",
+        action="store_true",
+        help="仅同步两融（推荐计划任务 10:10），不拉分时/明细",
+    )
+    parser.add_argument(
+        "--with-margin",
+        action="store_true",
+        help="分时同步时顺带拉两融（手工补数用；日常收盘任务勿开）",
+    )
     args = parser.parse_args(argv)
 
     ensure_dirs()
@@ -186,13 +221,25 @@ def main(argv: list[str] | None = None) -> int:
     for sym in symbols:
         code = sym["code"]
         try:
-            info = sync_one(code, trade_date=args.trade_date)
-            print(
-                f"[ok] {info['code']} {info.get('name') or ''} "
-                f"{info['trade_date']} ticks={info['tick_count']} "
-                f"minutes={info['minute_count']} margin={info.get('margin_count', 0)} "
-                f"status={info['status']}"
-            )
+            if args.margin_only:
+                info = sync_margin_one(code, trade_date=args.trade_date)
+                print(
+                    f"[margin] {info['code']} {info.get('name') or ''} "
+                    f"{info['trade_date']} margin={info.get('margin_count', 0)} "
+                    f"status={info['status']} {info.get('message') or ''}"
+                )
+            else:
+                info = sync_one(
+                    code,
+                    trade_date=args.trade_date,
+                    with_margin=bool(args.with_margin),
+                )
+                print(
+                    f"[ok] {info['code']} {info.get('name') or ''} "
+                    f"{info['trade_date']} ticks={info['tick_count']} "
+                    f"minutes={info['minute_count']} margin={info.get('margin_count', 0)} "
+                    f"status={info['status']}"
+                )
             if info["status"] == "fail":
                 failed += 1
         except Exception as e:

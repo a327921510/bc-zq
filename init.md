@@ -128,8 +128,8 @@ ORDER BY price;
           ▼                           ▼                           ▼
 ┌─────────────────┐         ┌─────────────────┐         ┌─────────────────┐
 │ 宝塔计划任务      │         │ 后端 API         │         │ Nginx（宝塔站点） │
-│ 交易日 16:00     │         │ FastAPI/uvicorn  │◄────────│ 前端静态 + 反代   │
-│ 跑 sync 拉东财   │────────►│ :8000（内网）     │         │ 80 对外（HTTP）  │
+│ 16:00 分时       │         │ FastAPI/uvicorn  │◄────────│ 前端静态 + 反代   │
+│ 10:10 两融       │────────►│ :8000（内网）     │         │ 80 对外（HTTP）  │
 └─────────────────┘         └────────┬────────┘         └─────────────────┘
                                      ▼
                             ┌─────────────────┐
@@ -255,7 +255,8 @@ project/
 │   │   ├── ip_whitelist.py  # 可选：与 Nginx 同文件的应用层兜底
 │   │   └── api.py           # FastAPI 入口
 │   └── scripts/
-│       ├── sync_today.sh    # 宝塔计划任务入口
+│       ├── sync_today.sh    # 16:00 分时计划任务
+│       ├── sync_margin.sh   # 10:10 两融计划任务
 │       ├── pre_deploy.sh    # 发版前备份 + migrate
 │       └── deploy.sh        # 一键发版（备份→依赖→前端）
 ├── Makefile                 # make bootstrap / deploy / sync …
@@ -454,30 +455,35 @@ include /www/wwwroot/bc-zq/ops/allowed_ips.conf;
 | 别把自己锁死 | 改名单前确认宝塔面板仍可进；可先从面板所在网络的 IP 写进白名单 |
 | 防爬 | `ops/robots.txt` 全站 `Disallow`；真正挡爬靠白名单 403 |
 
-### 9.6 宝塔计划任务（每日收盘同步）— 最关键
+### 9.6 宝塔计划任务 — 最关键
 
-宝塔 → 计划任务 → 添加：
+需要两条任务（时区 `Asia/Shanghai`）：
+
+**① 收盘分时（不含两融）**
 
 | 项 | 建议值 |
 |----|--------|
-| 任务类型 | Shell 脚本 |
 | 任务名称 | bc-zq-sync |
-| 执行周期 | 每天 `16:00`（或 `15:30`；仅需交易日生效时可在脚本内判断） |
-| 脚本内容 | 见下 |
+| 执行周期 | 每天 `16:00` |
+| 脚本 | `/www/wwwroot/bc-zq/backend/scripts/sync_today.sh` |
 
-```bash
-#!/bin/bash
-# 推荐直接调仓库脚本（内部 --all-enabled --backup，日志写 logs/sync.log）
-/www/wwwroot/bc-zq/backend/scripts/sync_today.sh
-```
+**② 两融补拉（次日上午）**
+
+交易所约 8:30–9:05 更新上一交易日两融；建议 **10:10** 再拉。
+
+| 项 | 建议值 |
+|----|--------|
+| 任务名称 | bc-zq-sync-margin |
+| 执行周期 | 每天 `10:10` |
+| 脚本 | `/www/wwwroot/bc-zq/backend/scripts/sync_margin.sh` |
 
 要点：
 
-1. 计划任务时区随系统；已设 `Asia/Shanghai` 才能对准 A 股收盘。
-2. 打开宝塔任务「保存日志」，失败可在面板查看。
-3. 可加第二条任务：每周清理过旧的 `backups/db/`（保留近 N 份）。
-4. 首次上线后，下一交易日人工确认 `sync_log` 与回放页有新数据。
-
+1. 计划任务时区随系统；已设 `Asia/Shanghai` 才能对准 A 股节奏。
+2. 打开宝塔任务「保存日志」；分时看 `logs/sync.log`，两融看 `logs/sync_margin.log`。
+3. 可加第三条任务：每周清理过旧的 `backups/db/`（保留近 N 份）。
+4. 首次上线后，下一交易日确认分时；再确认次日 10:10 后回放页有两融。
+5. 手工补两融：`python -m backend.src.sync --code 002594 --margin-only`。
 ### 9.7 磁盘、备份、迁移与发版
 
 | 项 | 建议 |
@@ -511,7 +517,7 @@ DEPLOY_RESTART_CMD='supervisorctl restart byd-api' \
 - [ ] `/zq/api/health` 经 Nginx 可访问（`http://ECS公网IP/zq/api/health`，非直接 8000）；名单外同样 403
 - [ ] `python -m backend.src.db version` 输出 ≥ 1
 - [ ] 手动执行一次 `pre_deploy.sh` 或 sync 脚本成功，`backups/db/` 有文件
-- [ ] 宝塔计划任务列表中能看到 16:00 任务
+- [ ] 宝塔计划任务列表中能看到 16:00 分时任务与 10:10 两融任务
 - [ ] `data/archive.db` 与 `backups/raw/` 有当日文件
 - [ ] 安全组未对公网开放 8000
 - [ ] 发版约定：先 `pre_deploy.sh`，且不同步覆盖 `data/`
@@ -542,8 +548,9 @@ uvicorn backend.src.api:app --host 127.0.0.1 --port 8000
 ### 10.2 每日增量
 
 ```bash
-# 交易日 16:00（生产用宝塔计划任务，见第九节）
+# 交易日：16:00 分时；次日 10:10 两融（生产用宝塔计划任务，见第九节）
 python -m backend.src.sync --all-enabled
+python -m backend.src.sync --all-enabled --margin-only
 cp -a data/archive.db backups/db/archive_$(date +%Y%m%d).db
 ```
 
@@ -551,6 +558,7 @@ cp -a data/archive.db backups/db/archive_$(date +%Y%m%d).db
 
 ```bash
 0 16 * * 1-5 cd /path/to/project && ./backend/scripts/sync_today.sh >> logs/sync.log 2>&1
+10 10 * * 1-5 cd /path/to/project && ./backend/scripts/sync_margin.sh >> logs/sync_margin.log 2>&1
 ```
 
 
@@ -585,7 +593,7 @@ cp -a data/archive.db backups/db/archive_$(date +%Y%m%d).db
 | 问题 | 答案 |
 |------|------|
 | 存什么？ | A 档成交明细 + 1 分钟分时 + 日摘要；分价由明细聚合 |
-| 何时存？ | 收盘后，非实时；生产用宝塔每天 16:00 任务 |
+| 何时存？ | 分时收盘后 16:00；两融次日 10:10 |
 | 怎么看？ | Web 回放页；生产 ECS + 宝塔；仅白名单公网 IP 可访问 |
 | 数据源？ | 东财当日接口；从启用日起逐日攒 |
 | 和 tdx2db？ | 无关 |

@@ -301,7 +301,7 @@ export default function ReplayPage() {
         <Alert
           type="info"
           showIcon
-          message="当日暂无两融数据（交易所通常次日上午才更新）"
+          message="当日暂无两融数据（通常次日 10:10 计划任务补拉；交易所约上午才公布）"
         />
       ) : null}
 

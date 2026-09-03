@@ -25,10 +25,10 @@ make api                          # uvicorn :8000 workers=1
 同机部署：**每日同步 cron + FastAPI(uvicorn) + Nginx `/zq/` 反代**。数据在 `data/`、`backups/`，发版永不覆盖。
 
 ```text
-首次上线                日常发版                 每日收盘
+首次上线                日常发版                 每日任务
 ─────────              ─────────               ─────────
-make bootstrap         make deploy             make sync
-配置 .env / 白名单      （备份→依赖→前端）        （宝塔 16:00）
+make bootstrap         make deploy             16:00 分时 sync
+配置 .env / 白名单      （备份→依赖→前端）        10:10 两融 sync
 Supervisor 托管 API    重启 Supervisor
 Nginx include 片段     make health
 验收清单（init.md 9.8）
@@ -47,7 +47,7 @@ make bootstrap
 |------|--------|
 | Supervisor | 启动命令：`.venv/bin/uvicorn backend.src.api:app --host 127.0.0.1 --port 8000 --workers 1` |
 | Nginx | 粘贴 `ops/nginx-site.snippet.conf`（`/zq/` → `:8000`），`include` 白名单 |
-| 计划任务 | Shell，每天 16:00：`/www/wwwroot/bc-zq/backend/scripts/sync_today.sh` |
+| 计划任务 | Shell：每天 **16:00** `sync_today.sh`；每天 **10:10** `sync_margin.sh` |
 | 安全组 | 放行 **80**；**勿**对公网放行 8000 |
 
 生产访问：`http://ECS公网IP/zq/`。Nginx 把 `/zq/` 反代到 uvicorn，`.env` 中 `BASE_PATH=/zq`。
@@ -91,16 +91,17 @@ cp ops/allowed_ips.conf.example ops/allowed_ips.conf
 | `make bootstrap` | 首次环境 |
 | `make deploy` | 发版全流程 |
 | `make pre-deploy` | 仅备份 + migrate |
-| `make sync` / `make sync-one CODE=…` | 收盘同步 |
+| `make sync` / `make sync-one CODE=…` | 收盘同步分时 |
+| `make sync-margin` | 仅同步两融（10:10 任务） |
 | `make frontend-build` | 仅前端 |
 | `make api` / `make health` / `make version` | 启 API / 探活 / schema |
 
-脚本入口：`backend/scripts/deploy.sh`、`pre_deploy.sh`、`sync_today.sh`。
+脚本入口：`backend/scripts/deploy.sh`、`pre_deploy.sh`、`sync_today.sh`、`sync_margin.sh`。
 
 ## 目录
 
 - `backend/` API 与每日同步（含关注股增删、手动同步、同步历史）
-- `backend/scripts/deploy.sh` 一键发版；`pre_deploy.sh` 备份 + 迁移；`sync_today.sh` 收盘任务
+- `backend/scripts/deploy.sh` 一键发版；`pre_deploy.sh` 备份 + 迁移；`sync_today.sh` 收盘分时；`sync_margin.sh` 次日两融
 - `Makefile` 上述流程的快捷入口
 - `frontend/` React + Ant Design；构建产物在 `frontend/dist/`（gitignore，服务器上 build）
 - `ops/上线与发版手册.md` 首日上线 + 日常发版（零基础逐步操作）

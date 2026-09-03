@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 宝塔计划任务入口：交易日收盘后同步分时/明细（不含两融；两融见 sync_margin.sh）
+# 宝塔计划任务入口：次日早上补拉两融（建议 10:10；交易所约 8:30–9:05 更新 T-1）
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -8,4 +8,4 @@ if [[ -f .venv/bin/activate ]]; then
   source .venv/bin/activate
 fi
 mkdir -p logs backups/db data
-python -m backend.src.sync --all-enabled --backup >> logs/sync.log 2>&1
+python -m backend.src.sync --all-enabled --margin-only >> logs/sync_margin.log 2>&1
