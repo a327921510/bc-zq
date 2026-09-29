@@ -35,7 +35,7 @@ from .db import (
     set_symbol_enabled,
     upsert_symbol,
 )
-from .fetch.eastmoney import fetch_quote, make_em_client
+from .fetch import fetch_quote
 from .ip_whitelist import IpWhitelistMiddleware
 from .sync import sync_one
 from .sync_guard import batch_gap_sleep, evaluate_sync, wait_eastmoney_gap
@@ -103,13 +103,12 @@ class SyncRequest(BaseModel):
 
 
 def _resolve_name(code: str, market: str, name: str | None) -> str:
-    """优先用调用方传入的名称；否则问东财报价，再退回代码本身。"""
+    """优先用调用方传入的名称；否则问腾讯/东财报价，再退回代码本身。"""
     if name and name.strip():
         return name.strip()
     try:
         wait_eastmoney_gap()
-        with make_em_client() as client:
-            quote = fetch_quote(client, code, market)
+        quote = fetch_quote(code, market)
         if quote.get("name"):
             return str(quote["name"])
     except Exception:

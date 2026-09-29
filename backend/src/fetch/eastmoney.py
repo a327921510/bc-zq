@@ -10,6 +10,7 @@ HTTP：优先 curl_cffi 模拟浏览器 TLS（机房 IP 上纯 httpx 常被东�
 from __future__ import annotations
 
 import json
+import random
 import time
 from datetime import date
 from pathlib import Path
@@ -33,7 +34,7 @@ UA = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
-# 部分网络下 push2 / push2his 会 Empty reply；push2delay 通常可用，作首选并回退
+# 机房 IP 上 push2 常 Empty reply；push2delay 偶发可通，作首选并粘滞
 PUSH_HOSTS = (
     "push2delay.eastmoney.com",
     "push2.eastmoney.com",
@@ -47,7 +48,10 @@ HIS_HOSTS = (
 
 # curl_cffi 模拟的 Chrome 版本；机房 IP 上纯 httpx/OpenSSL 指纹易被东财直接断开
 _CFFI_IMPERSONATE = "chrome131"
-_PER_HOST_ATTEMPTS = 3
+# 单 host 多试几次：东财对 ECS 常间歇性 curl 56，短间隔连打反而更差
+_PER_HOST_ATTEMPTS = 5
+# 进程内记住最近成功的 host，优先复用（避免一上来打必挂的 push2）
+_sticky_host: str | None = None
 
 
 def secid(code: str, market: str) -> str:
@@ -64,6 +68,29 @@ def make_em_client() -> httpx.Client:
         follow_redirects=True,
         limits=httpx.Limits(max_keepalive_connections=0, max_connections=20),
     )
+
+
+def _is_transient_disconnect(exc: BaseException) -> bool:
+    """东财间歇掐连：curl 56 / Empty reply / Server disconnected。"""
+    msg = str(exc).lower()
+    keys = (
+        "connection closed abruptly",
+        "curl: (56)",
+        "empty reply",
+        "server disconnected",
+        "remoteprotocolerror",
+        "connection reset",
+    )
+    return any(k in msg for k in keys)
+
+
+def _ordered_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
+    """粘滞成功 host 置前，其余保持原顺序去重。"""
+    global _sticky_host
+    if not _sticky_host or _sticky_host not in hosts:
+        return hosts
+    rest = tuple(h for h in hosts if h != _sticky_host)
+    return (_sticky_host, *rest)
 
 
 def _get_via_curl_cffi(
@@ -115,28 +142,35 @@ def _request_json(
     client: httpx.Client | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """单次 GET JSON：优先 curl_cffi（抗机房指纹拦截），失败再走 httpx。"""
+    """单次 GET JSON：优先 curl_cffi；仅未安装时才回退 httpx。
+
+    机房上 cffi 已失败再打 httpx 几乎必挂，还会加重限流，故网络错误不回退。
+    """
     hdrs = {**UA, **(headers or {})}
-    errors: list[Exception] = []
 
     try:
         return _get_via_curl_cffi(url, params, hdrs)
     except ImportError:
         pass
-    except Exception as e:
-        errors.append(e)
+    except Exception:
+        # cffi 已装但被掐连：不要再打 httpx
+        raise
 
     own = client is None
     http_client = client or make_em_client()
     try:
         return _get_via_httpx(http_client, url, params, hdrs)
-    except Exception as e:
-        errors.append(e)
-        # 保留更有信息量的首个错误（通常是 Server disconnected）
-        raise errors[0] from e
     finally:
         if own:
             http_client.close()
+
+
+def _sleep_before_retry(attempt: int, exc: BaseException) -> None:
+    """断连后拉长等待；attempt 从 0 起。"""
+    base = 1.5 * (2**attempt)
+    if _is_transient_disconnect(exc):
+        base = max(base, 2.0 + attempt * 1.5)
+    time.sleep(base + random.uniform(0.2, 1.0))
 
 
 def _get_json(
@@ -147,18 +181,20 @@ def _get_json(
     hosts: tuple[str, ...] = PUSH_HOSTS,
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """按 host 列表依次 GET；单 host 内短重试，应对东财偶发断连 / Empty reply。"""
+    """按 host 列表依次 GET；粘滞成功 host，断连时拉长退避再试。"""
+    global _sticky_host
     last_err: Exception | None = None
-    for host in hosts:
+    for host in _ordered_hosts(hosts):
         url = f"https://{host}{path}"
         for attempt in range(_PER_HOST_ATTEMPTS):
             try:
-                return _request_json(url, params, client=client, headers=headers)
+                data = _request_json(url, params, client=client, headers=headers)
+                _sticky_host = host
+                return data
             except Exception as e:
                 last_err = e
                 if attempt < _PER_HOST_ATTEMPTS - 1:
-                    # 指数退避：断连后立刻重试成功率低
-                    time.sleep(0.6 * (2**attempt))
+                    _sleep_before_retry(attempt, e)
     assert last_err is not None
     raise last_err
 

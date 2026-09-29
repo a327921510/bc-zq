@@ -1,6 +1,6 @@
 """同步入口：分时收盘归档 + 两融独立补拉。
 
-- 分时：交易日收盘后拉东财当日明细/分时（免费源不能回补历史明细）。
+- 分时：交易日收盘后拉当日明细/分时（腾讯为主、东财回退；免费源不能回补历史明细）。
 - 两融：交易所通常次日上午才更新 T 日，由独立任务在约 10:10 补拉；
   失败不清空已有行情；分时任务默认不拉两融，避免 16:00 白跑。
 """
@@ -23,7 +23,7 @@ from .db import (
     upsert_margin_rows,
     upsert_symbol,
 )
-from .fetch.eastmoney import fetch_day, fetch_margin_for_sync
+from .fetch import fetch_day, fetch_margin_for_sync
 
 
 def _today() -> str:
@@ -115,6 +115,8 @@ def sync_one(
         else:
             msg = f"raw={result['raw_path']}"
             status = "ok" if result["ticks"] or result["minutes"] else "fail"
+            if result.get("source"):
+                msg = f"source={result['source']}; {msg}"
             if result.get("errors"):
                 status = "partial" if status == "ok" else status
                 msg = f"{msg}; warnings={result['errors']}"

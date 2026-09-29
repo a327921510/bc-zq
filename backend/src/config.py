@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     sync_cooldown_seconds: int = 120
     sync_ok_reuse_seconds: int = 600
     sync_batch_gap_seconds: float = 2.0
-    sync_request_gap_seconds: float = 0.4
+    # 机房 IP 上东财易间歇掐连；请求间隔过短会连续 curl 56
+    sync_request_gap_seconds: float = 1.5
 
 
 settings = Settings()
