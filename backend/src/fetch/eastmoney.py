@@ -2,6 +2,9 @@
 
 注意：免费 details 只覆盖「当前交易日会话」，不能按历史日期回补。
 两融（RPTA_WEB_RZRQ_GGMX）可按历史日回补，但交易所通常次日上午才更新 T 日。
+
+HTTP：优先 curl_cffi 模拟浏览器 TLS（机房 IP 上纯 httpx 常被东财直接掐连），
+失败再回退禁用 keep-alive 的 httpx，并在多 host 间重试。
 """
 
 from __future__ import annotations
@@ -24,17 +27,27 @@ UA = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     ),
     "Referer": "https://quote.eastmoney.com/",
+    # 关闭 keep-alive：东财常先掐空闲连接，httpx 复用时就会报 Server disconnected
+    "Connection": "close",
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
 # 部分网络下 push2 / push2his 会 Empty reply；push2delay 通常可用，作首选并回退
 PUSH_HOSTS = (
     "push2delay.eastmoney.com",
     "push2.eastmoney.com",
+    "82.push2.eastmoney.com",
 )
 HIS_HOSTS = (
     "push2delay.eastmoney.com",
     "push2his.eastmoney.com",
+    "push2.eastmoney.com",
 )
+
+# curl_cffi 模拟的 Chrome 版本；机房 IP 上纯 httpx/OpenSSL 指纹易被东财直接断开
+_CFFI_IMPERSONATE = "chrome131"
+_PER_HOST_ATTEMPTS = 3
 
 
 def secid(code: str, market: str) -> str:
@@ -43,31 +56,116 @@ def secid(code: str, market: str) -> str:
     return f"{prefix}.{code}"
 
 
-def _get_json(
+def make_em_client() -> httpx.Client:
+    """构建禁用 keep-alive 的 httpx Client（curl_cffi 不可用时的回退通道）。"""
+    return httpx.Client(
+        headers=UA,
+        timeout=settings.http_timeout,
+        follow_redirects=True,
+        limits=httpx.Limits(max_keepalive_connections=0, max_connections=20),
+    )
+
+
+def _get_via_curl_cffi(
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str],
+) -> dict[str, Any]:
+    """用浏览器 TLS 指纹请求；ImportError 表示未安装，由调用方回退 httpx。"""
+    from curl_cffi import requests as cffi_requests
+
+    resp = cffi_requests.get(
+        url,
+        params=params,
+        headers=headers,
+        impersonate=_CFFI_IMPERSONATE,
+        timeout=settings.http_timeout,
+        allow_redirects=True,
+    )
+    if resp.status_code >= 400:
+        raise httpx.HTTPStatusError(
+            f"HTTP {resp.status_code}",
+            request=httpx.Request("GET", url),
+            response=httpx.Response(resp.status_code),
+        )
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError(f"eastmoney non-object JSON from {url}")
+    return data
+
+
+def _get_via_httpx(
     client: httpx.Client,
+    url: str,
+    params: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    resp = client.get(url, params=params, headers=headers)
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError(f"eastmoney non-object JSON from {url}")
+    return data
+
+
+def _request_json(
+    url: str,
+    params: dict[str, Any],
+    *,
+    client: httpx.Client | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """单次 GET JSON：优先 curl_cffi（抗机房指纹拦截），失败再走 httpx。"""
+    hdrs = {**UA, **(headers or {})}
+    errors: list[Exception] = []
+
+    try:
+        return _get_via_curl_cffi(url, params, hdrs)
+    except ImportError:
+        pass
+    except Exception as e:
+        errors.append(e)
+
+    own = client is None
+    http_client = client or make_em_client()
+    try:
+        return _get_via_httpx(http_client, url, params, hdrs)
+    except Exception as e:
+        errors.append(e)
+        # 保留更有信息量的首个错误（通常是 Server disconnected）
+        raise errors[0] from e
+    finally:
+        if own:
+            http_client.close()
+
+
+def _get_json(
+    client: httpx.Client | None,
     path: str,
     params: dict[str, Any],
     *,
     hosts: tuple[str, ...] = PUSH_HOSTS,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """按 host 列表依次 GET；单 host 内短重试，应对东财偶发断连。"""
+    """按 host 列表依次 GET；单 host 内短重试，应对东财偶发断连 / Empty reply。"""
     last_err: Exception | None = None
     for host in hosts:
         url = f"https://{host}{path}"
-        for attempt in range(2):
+        for attempt in range(_PER_HOST_ATTEMPTS):
             try:
-                resp = client.get(url, params=params)
-                resp.raise_for_status()
-                return resp.json()
+                return _request_json(url, params, client=client, headers=headers)
             except Exception as e:
                 last_err = e
-                if attempt < 1:
-                    time.sleep(0.5 * (attempt + 1))
+                if attempt < _PER_HOST_ATTEMPTS - 1:
+                    # 指数退避：断连后立刻重试成功率低
+                    time.sleep(0.6 * (2**attempt))
     assert last_err is not None
     raise last_err
 
 
-def fetch_details(client: httpx.Client, code: str, market: str) -> list[str]:
+def fetch_details(
+    client: httpx.Client | None, code: str, market: str
+) -> list[str]:
     """当日成交明细原始行列表（pos=0 尽量拉全量）。"""
     data = _get_json(
         client,
@@ -85,7 +183,7 @@ def fetch_details(client: httpx.Client, code: str, market: str) -> list[str]:
 
 
 def fetch_trends(
-    client: httpx.Client, code: str, market: str, ndays: int = 1
+    client: httpx.Client | None, code: str, market: str, ndays: int = 1
 ) -> tuple[dict[str, Any], list[str]]:
     """分时 trends2；多日优先走 his 域名，失败再回退 delay。"""
     hosts = PUSH_HOSTS if ndays <= 1 else HIS_HOSTS
@@ -111,7 +209,9 @@ def fetch_trends(
     return meta, list(trends)
 
 
-def fetch_quote(client: httpx.Client, code: str, market: str) -> dict[str, Any]:
+def fetch_quote(
+    client: httpx.Client | None, code: str, market: str
+) -> dict[str, Any]:
     """快照报价；字段号为东财约定（f47=量手，f48=额）。"""
     data = _get_json(
         client,
@@ -177,7 +277,7 @@ def _parse_margin_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_margin(
-    client: httpx.Client,
+    client: httpx.Client | None,
     code: str,
     *,
     trade_date: str | None = None,
@@ -209,13 +309,13 @@ def fetch_margin(
         "source": "WEB",
         "client": "WEB",
     }
-    resp = client.get(
+    # 数据中心域名同样可能掐连；走与 push2 相同的 cffi / httpx 回退
+    payload = _request_json(
         DATACENTER_URL,
-        params=params,
+        params,
+        client=client,
         headers={**UA, "Referer": "https://data.eastmoney.com/"},
     )
-    resp.raise_for_status()
-    payload = resp.json()
     rows = ((payload.get("result") or {}).get("data")) or []
     return [_parse_margin_row(r) for r in rows if r]
 
@@ -247,11 +347,8 @@ def fetch_margin_for_sync(
     from datetime import timedelta
 
     own = client is None
-    client = client or httpx.Client(
-        headers=UA,
-        timeout=settings.http_timeout,
-        follow_redirects=True,
-    )
+    # curl_cffi 路径不依赖 client；仅 httpx 回退时需要
+    http_client = client or make_em_client()
     errors: list[str] = []
     collected: dict[str, dict[str, Any]] = {}
     try:
@@ -260,7 +357,7 @@ def fetch_margin_for_sync(
         try:
             wait_eastmoney_gap()
             for row in fetch_margin(
-                client,
+                http_client,
                 code,
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
@@ -275,7 +372,9 @@ def fetch_margin_for_sync(
         if trade_date and trade_date not in collected:
             try:
                 wait_eastmoney_gap()
-                for row in fetch_margin(client, code, trade_date=trade_date, page_size=5):
+                for row in fetch_margin(
+                    http_client, code, trade_date=trade_date, page_size=5
+                ):
                     if row.get("trade_date") and row.get("code"):
                         collected[row["trade_date"]] = row
             except Exception as e:
@@ -287,7 +386,7 @@ def fetch_margin_for_sync(
         return {"rows": rows, "raw_path": str(raw_path) if raw_path else None, "errors": errors}
     finally:
         if own:
-            client.close()
+            http_client.close()
 
 
 def fetch_day(
@@ -303,32 +402,28 @@ def fetch_day(
     trade_date 仅作标签；真正日期以 trends 解析结果或系统当日为准。
     """
     own = client is None
-    client = client or httpx.Client(
-        headers=UA,
-        timeout=settings.http_timeout,
-        follow_redirects=True,
-    )
+    http_client = client or make_em_client()
     try:
         errors: list[str] = []
         meta: dict[str, Any] = {}
         trend_lines: list[str] = []
         try:
             wait_eastmoney_gap()
-            meta, trend_lines = fetch_trends(client, code, market, ndays=1)
+            meta, trend_lines = fetch_trends(http_client, code, market, ndays=1)
         except Exception as e:
             errors.append(f"trends:{e}")
 
         detail_lines: list[str] = []
         try:
             wait_eastmoney_gap()
-            detail_lines = fetch_details(client, code, market)
+            detail_lines = fetch_details(http_client, code, market)
         except Exception as e:
             errors.append(f"details:{e}")
 
         quote: dict[str, Any] = {}
         try:
             wait_eastmoney_gap()
-            quote = fetch_quote(client, code, market)
+            quote = fetch_quote(http_client, code, market)
         except Exception as e:
             errors.append(f"quote:{e}")
 
@@ -388,4 +483,4 @@ def fetch_day(
         }
     finally:
         if own:
-            client.close()
+            http_client.close()

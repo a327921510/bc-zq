@@ -9,7 +9,6 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -36,7 +35,7 @@ from .db import (
     set_symbol_enabled,
     upsert_symbol,
 )
-from .fetch.eastmoney import UA, fetch_quote
+from .fetch.eastmoney import fetch_quote, make_em_client
 from .ip_whitelist import IpWhitelistMiddleware
 from .sync import sync_one
 from .sync_guard import batch_gap_sleep, evaluate_sync, wait_eastmoney_gap
@@ -109,7 +108,7 @@ def _resolve_name(code: str, market: str, name: str | None) -> str:
         return name.strip()
     try:
         wait_eastmoney_gap()
-        with httpx.Client(headers=UA, timeout=settings.http_timeout) as client:
+        with make_em_client() as client:
             quote = fetch_quote(client, code, market)
         if quote.get("name"):
             return str(quote["name"])
